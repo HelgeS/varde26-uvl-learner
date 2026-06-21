@@ -1,0 +1,29 @@
+nbVars 20
+domainSize 0 1
+
+Gamma
+ImplXY
+Alternative
+Any
+
+Features
+Connector
+Paradigm
+Client/Server
+Synchronous
+Timeout
+Asynchronous
+Polling
+Blocking
+Non-blocking
+Callback
+Message-Based
+Sender
+Receiver
+Pull
+Queued
+Non-Queued
+Push
+Technology
+CAN
+Local

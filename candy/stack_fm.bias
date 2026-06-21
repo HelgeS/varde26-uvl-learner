@@ -1,0 +1,26 @@
+nbVars 17
+domainSize 0 1
+
+Gamma
+ImplXY
+Alternative
+Any
+
+Features
+Stack
+Size
+Fixed
+Value
+Dynamic
+Element_Type
+Integer
+Float
+String
+Optimization
+Speed
+Memory_Usage
+Counter
+Additional_Features
+Thread_Safety
+Bounds_Check
+Type_Check

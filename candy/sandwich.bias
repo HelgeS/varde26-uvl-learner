@@ -1,0 +1,15 @@
+nbVars 6
+domainSize 0 1
+
+Gamma
+ImplXY
+Alternative
+Any
+
+Features
+Sandwich
+Bread
+Sauce
+Ketchup
+Mustard
+Cheese

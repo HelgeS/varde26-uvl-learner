@@ -87,7 +87,7 @@ Lazily imported only when a runner is given `--deep`:
 
 ### Standalone utilities (independent of the runners)
 - `uvl_to_candy.py` — convert UVL models to the Candy `.bias`/`.target` format
-  (samples in `cafrmt/`). `uv run python uvl_to_candy.py models/sandwich.uvl --out-dir cafrmt/`
+  (samples in `candy/`). `uv run python uvl_to_candy.py models/sandwich.uvl --out-dir cafrmt/`
 - `extract_reference.py` — extract the pairwise (binary+unit) constraint subset
   directly from a UVL's CNF as reference JSON, for testing the tree pipeline
   without CA. `uv run python extract_reference.py models/aircraft_fm.uvl`

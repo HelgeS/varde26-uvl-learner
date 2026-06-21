@@ -1,0 +1,10 @@
+Any 0
+ImplXY 0 1
+ImplXY 1 0
+ImplXY 2 0
+Any ~2 3 4
+Any ~3 ~4
+ImplXY 3 2
+ImplXY 4 2
+ImplXY 5 0
+ImplXY 3 5

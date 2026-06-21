@@ -1,0 +1,59 @@
+features
+	"_r0" 
+		mandatory
+			"_r1" 
+				alternative
+					"_r2" 
+					"_r3" 
+					"_r4" 
+					"_r5" 
+		mandatory
+			"_r6" 
+				alternative
+					"_r7" 
+					"_r8" 
+		mandatory
+			"_r9" 
+				or
+					"_r10" 
+					"_r11" 
+					"_r12" 
+					"_r13" 
+		mandatory
+			"_r14" 
+				alternative
+					"_r15" 
+					"_r16" 
+		mandatory
+			"_r17" 
+				alternative
+					"_r18" 
+					"_r19" 
+					"_r20" 
+		mandatory
+			"_r21" 
+				alternative
+					"_r22" 
+					"_r23" 
+		mandatory
+			"_r24" 
+				alternative
+					"_r25" 
+						mandatory
+							"_r26" 
+					"_r27" 
+						mandatory
+							"_r28" 
+constraints
+	"_r5" => "_r28"
+	"_r10" => "_r21"
+	"_r10" => "_r24"
+	"_r23" => "_r27"
+	"_r22" => "_r25"
+	"_r2" => "_r28"
+	"_r13" => "_r14"
+	"_r12" => "_r17"
+	"_r1" => "_r10"
+	"_r6" => "_r13"
+	"_r3" => "_r26"
+	"_r4" => "_r26"

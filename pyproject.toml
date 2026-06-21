@@ -1,0 +1,20 @@
+[project]
+name = "uvl-constraint-learner"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cpmpy>=0.10.0",
+    "flamapy>=2.5.0",
+    "igraph>=1.0.0",
+    "kconfiglib>=14.1.0",
+    "matplotlib>=3.10.8",
+    "networkx>=3.6.1",
+    "pandas>=3.0.1",
+    "pindakaas>=0.4.1",
+    "pycona>=0.4.1",
+    "python-sat>=0.1.8.dev17",
+    "pyvis>=0.3.2",
+    "rich>=14.3.3",
+]

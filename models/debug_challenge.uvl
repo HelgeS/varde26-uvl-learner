@@ -1,0 +1,81 @@
+features
+    System
+        mandatory
+            Core
+                mandatory
+                    Engine
+                        alternative
+                            Diesel
+                            Electric
+                            Hybrid
+                or
+                    Logging
+                    Metrics
+                    Tracing
+            Storage
+                optional
+                    Cache
+                        alternative
+                            Redis
+                            Memcached
+                mandatory
+                    Database
+                        or
+                            Postgres
+                            MySQL
+                            SQLite
+        optional
+            Security
+                mandatory
+                    Auth
+                        alternative
+                            OAuth
+                            SAML
+                optional
+                    Encryption
+                optional
+                    Firewall
+        optional
+            UI
+                mandatory
+                    Framework
+                        alternative
+                            React
+                            Angular
+                optional
+                    Theming
+                        or
+                            DarkMode
+                            LightMode
+                            HighContrast
+                optional
+                    Analytics
+        optional
+            Plugins
+                or
+                    PluginA
+                    PluginB
+                    PluginC
+
+constraints
+    // Cross-tree implies (binary) — the dominant missing type
+    Electric => Cache
+    Hybrid => Logging
+    OAuth => React
+    SAML => Encryption
+    Analytics => Metrics
+    Firewall => Logging
+
+    // Cross-tree excludes (binary) — second most missed
+    Diesel => !SQLite
+    Redis => !Angular
+    PluginA => !MySQL
+
+    // Deeper cross-tree implies (across 3+ levels of nesting)
+    PluginB => Postgres
+    PluginC => Auth
+    DarkMode => Encryption
+
+    // Equivalence-like pair (A => B and B => A)
+    Tracing => Analytics
+    Analytics => Tracing

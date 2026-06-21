@@ -1,0 +1,61 @@
+features
+	"DelayBlock" 
+		mandatory
+			"v_output" 
+		mandatory
+			"u_input" 
+		optional
+			"rootFeature" 
+				optional
+					"variable_delay" 
+						mandatory
+							"d_input" 
+				optional
+					"resettable" 
+						mandatory
+							"res_input" 
+				optional
+					"external_init_value" 
+						mandatory
+							"ic_input" 
+				optional
+					"enable_via_input" 
+						mandatory
+							"e_input" 
+		optional
+			"d_parameter" 
+		optional
+			"ic_parameter" 
+		mandatory
+			"semantics" 
+				alternative
+					"sem" 
+					"sem_reset" 
+					"sem_enable" 
+					"sem_reset_enable" 
+					"sem_variable_delay" 
+					"sem_reset_variable_delay" 
+					"sem_reset_enable_variable_delay" 
+		mandatory
+			"DelayBlock_23" 
+constraints
+	"sem_reset_variable_delay" => "resettable"
+	"sem_reset" => "resettable"
+	"sem_reset_variable_delay" => !"enable_via_input"
+	"sem_enable" => !"resettable"
+	"sem_reset_enable_variable_delay" => "variable_delay"
+	"sem_reset_enable_variable_delay" => "resettable"
+	"sem_reset" => !"enable_via_input"
+	"sem" => !"resettable"
+	"sem" => "d_parameter"
+	"sem_enable" => "enable_via_input"
+	"sem" => !"enable_via_input"
+	"sem_reset_enable" => "enable_via_input"
+	"sem_reset_enable" => "resettable"
+	"sem_variable_delay" => "variable_delay"
+	"sem_variable_delay" => !"resettable"
+	"sem_variable_delay" => !"enable_via_input"
+	"sem_reset_enable_variable_delay" => "enable_via_input"
+	"sem_reset_variable_delay" => "variable_delay"
+	"ic_parameter" => !"external_init_value"
+	"d_parameter" => !"variable_delay"

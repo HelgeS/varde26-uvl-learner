@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# UVL learner runtime artifacts
+query_cache.p
+sandwich.uvl
+dbg/
+results/
+results_notree/
+reference/
+candy/
+*.uvl_learned.uvl
+
+.DS_Store
+uv.lock

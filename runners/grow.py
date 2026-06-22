@@ -1,34 +1,13 @@
-"""
-Experiment runner for constraint acquisition on UVL feature models — NO-TREE variant.
+"""Runner: grow-bias variant.
 
-**Key difference from ca_uvl.py:**
-Only feature *names* are known during learning; the tree structure is deliberately
-ignored.  The UVL file is used solely as a ground-truth oracle and for feature-name
-extraction.  A flat pairwise bias is built from the names alone, and after learning
-the flat constraint set is post-processed by ``infer_tree`` to reconstruct a tree
-suitable for UVL export.
-
-**Collapse handling (skip-D, enabled by default):**
-Binary CA cannot represent n-ary group-completeness clauses.  When the oracle
-rejects a query but no binary candidate is violated, pycona raises "Collapse".
-``FindCSkipCollapse`` catches this and returns ``None``; ``SkipCollapseCAEnv``
-discards the ``None`` and continues.  After convergence, ``refine_completeness``
-recovers missing ``P => any(children)`` clauses via direct SAT checks.
-Use ``--no-skip-collapse`` to disable (Collapse raises an exception instead).
+Iteratively grows the group bias: on a Collapse it widens the candidate group
+size and restarts CA, seeded from what was already learned. Keeps its own
+skip-collapse environment (custom query generator and time limits) distinct
+from the shared one in uvl_learner.acquire.
 
 Usage:
-    # Generate sandwich example and run
-    python ca_uvl_notree.py --generate-example --verify
-
-    # Explicit file
-    python ca_uvl_notree.py sandwich.uvl --verify
-
-    # Batch mode
-    python ca_uvl_notree.py models/cloud/ --out-dir results_notree/
-
-    # Compare with tree-aware variant
-    python ca_uvl.py sandwich.uvl --verify
-    python ca_uvl_notree.py sandwich.uvl --verify
+    uv run python -m runners.grow --generate-example --verify
+    uv run python -m runners.grow models/aircraft_fm.uvl --verify
 """
 
 import argparse
@@ -54,25 +33,26 @@ from pycona import (
 )
 from pycona.find_constraint import FindC, FindC2
 from pycona.utils import restore_scope_values
-from uvl_export import verify_learned, export_learned_to_uvl
 
-from ca_common import (
-    ALGORITHMS,
-    extract_feature_names,
-    extract_target_constraints,
+from uvl_learner.oracle import extract_feature_names, extract_target_constraints
+from uvl_learner.io import (
     TimeoutError,
     _timeout_handler,
     save_result,
     collect_uvl_paths,
+    export_learned_to_uvl,
 )
-from tree_inference import (
-    infer_and_refine_tree,
+from uvl_learner.verify import verify_learned
+from uvl_learner.acquire import ALGORITHMS
+from uvl_learner.bias.grow import build_bias, add_group_bias
+from uvl_learner.reconstruct.refine import infer_and_refine_tree
+from uvl_learner.reconstruct.tree import (
     infer_tree,
-    constraints_from_tree,
     _validate_tree,
     _fix_multi_parent_tree,
-    cleanup_dumb,
 )
+from uvl_learner.reconstruct.extract import constraints_from_tree
+from uvl_learner.reconstruct.cleanup import cleanup_dumb
 
 
 EXAMPLE_UVL = """\
@@ -226,75 +206,6 @@ class SkipCollapseCAEnv(ActiveCAEnv):
 # ── Flat bias construction (no tree) ─────────────────────────────────
 
 
-def build_bias(variables):
-    """Build flat pairwise candidate constraint set — binary only.
-
-    For each pair (i < j):
-        vi.implies(vj), vj.implies(vi)     # requires (both directions)
-        vi.implies(~vj), vj.implies(~vi)   # excludes (both directions)
-        vi == vj                           # equivalence
-
-    For each variable vi:
-        vi, ~vi                            # core / dead (unary)
-
-    Size: 5·C(n,2) + 2·n.  For n=20 → 990 candidates.
-
-    N-ary group-completeness clauses are not representable here.  With
-    skip-collapse enabled (default), Collapse events from them are suppressed
-    and the missing clauses are recovered post-CA by ``refine_completeness``.
-    """
-    bias = []
-    n = len(variables)
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            vi, vj = variables[i], variables[j]
-            bias.append(vi.implies(vj))
-            bias.append(vj.implies(vi))
-            bias.append(vi.implies(~vj))
-            bias.append(vj.implies(~vi))
-            bias.append(vi == vj)
-
-    # TODO mquacq2 does not support unary constraints
-    # for vi in variables:
-    #     bias.append(vi)
-    #     bias.append(~vi)
-
-    return bias
-
-
-def add_group_bias(variables, group_size: int, constraint_base: list) -> list:
-    from itertools import combinations
-
-    bias = []
-    n = len(variables)
-
-    for parent_idx in range(n):
-        parent = variables[parent_idx]
-        others = [variables[j] for j in range(n) if j != parent_idx]
-
-        valid_children = [c for c in others if c.implies(parent) in constraint_base]
-        valid_exclusions = {
-            (c1, c2)
-            for c1, c2 in combinations(valid_children, 2)
-            if c1.implies(~c2) in constraint_base or c2.implies(~c1) in constraint_base
-        }
-
-        for children in combinations(valid_children, group_size):
-            bias.append(parent.implies(cp.any(children)))
-
-            # Fast alternative group check:
-            # Are all pairs within this specific combination in our exclusions set?
-            # This is an instant O(1) hash lookup per pair.
-            if all(
-                (c1, c2) in valid_exclusions for c1, c2 in combinations(children, 2)
-            ):
-                bias.append(parent.implies(sum(children) == 1))
-
-    return bias
-
-
-# ── Algorithm factory ─────────────────────────────────────────────────
 
 
 def build_algorithm(
@@ -357,6 +268,8 @@ def build_algorithm(
 
 
 # ── Experiment runner ─────────────────────────────────────────────────
+
+
 
 
 def run_experiment(
@@ -949,7 +862,7 @@ def main():
             save_result(r, out_dir / f"{uvl_path.stem}.json")
 
     if args.deep:
-        from report_results import deep_analysis
+        from diagnostics.report import deep_analysis
 
         # Add synthetic keys expected by deep_analysis
         for r in results:

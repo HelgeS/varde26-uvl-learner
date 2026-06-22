@@ -27,30 +27,60 @@ Key dependencies (see `pyproject.toml`): `pycona` (CA algorithms), `cpmpy`
 
 ```bash
 # Generate the built-in sandwich example and learn it, then SAT-verify
-uv run python ca_uvl_notree.py --generate-example --verify
+uv run python -m runners.pairwise --generate-example --verify
 
 # Single model
-uv run python ca_uvl_notree.py models/aircraft_fm.uvl --verify
+uv run python -m runners.pairwise models/aircraft_fm.uvl --verify
 
 # Batch over a directory, write one JSON per model, cap feature count
-uv run python ca_uvl_notree.py models/ --out-dir results/ --max-features 50 --timeout 120
+uv run python -m runners.pairwise models/ --out-dir results/ --max-features 50 --timeout 120
 
 # Export the learned model back to UVL
-uv run python ca_uvl_notree.py models/aircraft_fm.uvl --export-uvl out/
+uv run python -m runners.pairwise models/aircraft_fm.uvl --export-uvl out/
+```
+
+## Project layout
+
+```
+uvl_learner/          importable library — the pipeline stages
+  oracle.py             UVL → feature names, variables, target, ConstraintOracle
+  io.py                 path globbing, result JSON, timeouts, UVL writer
+  verify.py             SAT equivalence check (the "validation" pillar)
+  acquire.py            shared CA machinery: skip-collapse env, ALGORITHMS,
+                          build_algorithm
+  bias/                 candidate-constraint construction (one file per strategy)
+    pairwise.py           static binary (+ optional n-ary group) bias
+    grow.py               grow-on-collapse bias
+    graph.py              networkx bias + custom FindScope/FindC/QGen components
+  reconstruct/          post-CA tree pipeline (one file per stage)
+    tree.py               infer_tree, validate, single-parent repair
+    refine.py             infer_and_refine_tree (+ deprecated variants)
+    extract.py            constraints_from_tree
+    cleanup.py            drop spurious cross-tree constraints
+    _common.py            shared helpers
+
+runners/              the three entry points (run with `python -m runners.<name>`)
+  pairwise.py           baseline static pairwise bias
+  grow.py               grow-bias (own skip-collapse env)
+  graph.py              graph-bias (uses uvl_learner.bias.graph)
+
+diagnostics/          post-hoc analysis (also reachable via runner `--deep`)
+  report.py  missing.py  underconstraining.py  refine_from_json.py
+convert/              standalone data-format tools
+  to_candy.py  to_reference.py
 ```
 
 ## The three runners
 
-All three learn a **flat pairwise bias** with no tree knowledge, then run the
-post-CA pipeline (tree inference → group refinement → constraint extraction →
-cleanup → optional SAT verification). They differ only in how the bias / CA loop
-is organized:
+Each runner builds a bias, runs a pycona CA loop against the oracle, then runs the
+shared post-CA pipeline (tree inference → group refinement → constraint extraction
+→ cleanup → optional SAT verification). They differ only in the bias / CA loop:
 
 | Runner | Approach |
 | --- | --- |
-| `ca_uvl_notree.py` | Baseline. Binary pairwise bias (+ optional static n-ary group bias via `--group-bias-max`). "Skip-collapse" handles n-ary clauses the binary bias can't represent. |
-| `ca_uvl_notree_grow_bias.py` | Iteratively **grows** the group bias: on a Collapse it widens the candidate group size and restarts CA, seeded from what was already learned. |
-| `ca_uvl_notree_graph_bias.py` | Custom graph/conjunction-aware CA components (own FindScope/FindC/QGen) built on `networkx` for richer n-ary candidate generation. |
+| `runners.pairwise` | Baseline. Binary pairwise bias (+ optional static n-ary group bias via `--group-bias-max`). "Skip-collapse" handles n-ary clauses the binary bias can't represent. |
+| `runners.grow` | Iteratively **grows** the group bias: on a Collapse it widens the candidate group size and restarts CA, seeded from what was already learned. Keeps its own skip-collapse env. |
+| `runners.graph` | Custom graph/conjunction-aware CA components (own FindScope/FindC/QGen) built on `networkx`, in `uvl_learner.bias.graph`, for richer n-ary candidate generation. |
 
 Common flags: `--verify`, `--export-uvl PATH`, `--out-dir DIR`,
 `--algorithm {quacq,mquacq,mquacq2,growacq,pquacq,mineacq,genacq}`,
@@ -59,50 +89,35 @@ Common flags: `--verify`, `--export-uvl PATH`, `--out-dir DIR`,
 
 ## Post-CA pipeline (shared)
 
-1. `infer_and_refine_tree()` — reconstruct a tree from learned constraints and
-   recover missing `P => any(children)` completeness clauses via oracle queries.
-2. `_validate_tree()` / `_fix_multi_parent_tree()` — enforce single-parent tree.
-3. `constraints_from_tree()` — extract structural constraints + cross-tree residuals.
-4. `cleanup_dumb()` — drop spurious cross-tree constraints (disable with `--no-cleanup`).
-5. `verify_learned()` — SAT equivalence check vs. the oracle (`--verify`).
-6. `export_learned_to_uvl()` — write a `.uvl` file (`--export-uvl`).
+1. `reconstruct.refine.infer_and_refine_tree()` — reconstruct a tree from learned
+   constraints and recover missing `P => any(children)` completeness clauses.
+2. `reconstruct.tree._validate_tree()` / `_fix_multi_parent_tree()` — enforce single-parent tree.
+3. `reconstruct.extract.constraints_from_tree()` — structural + cross-tree residuals.
+4. `reconstruct.cleanup.cleanup_dumb()` — drop spurious cross-tree constraints (`--no-cleanup` to skip).
+5. `verify.verify_learned()` — SAT equivalence check vs. the oracle (`--verify`).
+6. `io.export_learned_to_uvl()` — write a `.uvl` file (`--export-uvl`).
 
-## File map — what's needed for what
+## Diagnostics & conversion
 
-### Core (required by all three runners)
-- `ca_common.py` — feature-name / target-constraint extraction, `ALGORITHMS`
-  registry, timeout + result-saving helpers.
-- `tree_inference.py` — tree reconstruction, validation, constraint extraction,
-  cleanup.
-- `uvl_export.py` — `export_learned_to_uvl()` and `verify_learned()` (SAT
-  equivalence).
+```bash
+# Fast overview from result JSON (no SAT); add --deep for SAT-based diagnosis
+uv run python -m diagnostics.report results/
 
-### `--deep` diagnosis (optional)
-Lazily imported only when a runner is given `--deep`:
-- `report_results.py` — result reporting + `deep_analysis()`.
-- `diagnose_missing.py` — classify/locate missing clauses.
-- `diagnose_underconstraining.py` — bias-coverage + under-constraining analysis.
-- `refine_from_json.py` — re-run tree inference/refinement from a saved results
-  JSON without re-running CA (also usable standalone).
+# Which target clauses are missing from a result
+uv run python -m diagnostics.missing results/stack_fm.json
 
-### Standalone utilities (independent of the runners)
-- `uvl_to_candy.py` — convert UVL models to the Candy `.bias`/`.target` format
-  (samples in `candy/`). `uv run python uvl_to_candy.py models/sandwich.uvl --out-dir cafrmt/`
-- `extract_reference.py` — extract the pairwise (binary+unit) constraint subset
-  directly from a UVL's CNF as reference JSON, for testing the tree pipeline
-  without CA. `uv run python extract_reference.py models/aircraft_fm.uvl`
+# Re-run the post-CA pipeline from a saved JSON without re-running CA
+uv run python -m diagnostics.refine_from_json -p results/REAL-FM-5.json --verify
 
-### Dependency summary
+# Convert UVL → Candy .bias/.target  (samples in candy/)
+uv run python -m convert.to_candy models/sandwich.uvl --out-dir candy/
 
-| You want to run… | Needs |
-| --- | --- |
-| `ca_uvl_notree.py` | core (`ca_common`, `tree_inference`, `uvl_export`) |
-| `ca_uvl_notree_grow_bias.py` | core (`ca_common`, `tree_inference`, `uvl_export`) |
-| `ca_uvl_notree_graph_bias.py` | core + imports `build_bias` from `ca_uvl_notree.py` |
-| any runner with `--deep` | + `report_results`, `diagnose_missing`, `diagnose_underconstraining`, `refine_from_json` |
-| `uvl_to_candy.py` | `ca_common` |
-| `extract_reference.py` | `ca_common` |
-| `refine_from_json.py` (standalone) | core + `report_results` (+ deep chain) |
+# Extract the pairwise (binary+unit) reference subset as JSON
+uv run python -m convert.to_reference models/aircraft_fm.uvl
+```
+
+Each runner's `--deep` flag lazily runs `diagnostics.report.deep_analysis()` on
+the converged results.
 
 ## CPMpy pitfall
 

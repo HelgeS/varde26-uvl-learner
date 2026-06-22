@@ -12,8 +12,8 @@ some target clauses), this script:
    bias that was used during CA
 
 Usage:
-    python diagnose_underconstraining.py results/ --summary
-    python diagnose_underconstraining.py results/model_foo.json -v
+    python -m diagnostics.underconstraining results/ --summary
+    python -m diagnostics.underconstraining results/model_foo.json -v
 """
 
 import argparse
@@ -27,7 +27,7 @@ import cpmpy as cp
 from cpmpy.expressions.variables import _BoolVarImpl, NegBoolView
 from cpmpy.expressions.core import Operator, Comparison
 
-from ca_common import (
+from uvl_learner.oracle import (
     extract_feature_names,
     extract_target_constraints,
 )
@@ -279,7 +279,7 @@ def analyze_missing(result_path: str, model_override: str = None) -> dict:
     # Rebuild target and learned
     target_cl = extract_target_constraints(model_path, variables, feature_names)
 
-    from refine_from_json import parse_constraints
+    from diagnostics.refine_from_json import parse_constraints
     learned_cl = parse_constraints(result.get("constraints", []), variables)
 
     # Find missing target clauses

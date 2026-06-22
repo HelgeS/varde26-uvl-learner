@@ -1,35 +1,20 @@
-"""Shared utilities for constraint acquisition on UVL feature models.
+"""UVL → oracle setup.
 
-Functions and constants used by both ca_uvl.py (tree-known) and
-ca_uvl_notree.py (tree-unknown), as well as diagnostic scripts.
+Parse a ``.uvl`` model into the inputs a constraint-acquisition run needs:
+
+- ``extract_feature_names`` / ``extract_features`` — feature names (and, optionally,
+  the tree structure used only as ground truth).
+- ``extract_target_constraints`` — flamapy's SAT/CNF encoding as CPMpy constraints,
+  i.e. the ground truth the oracle answers from.
+- ``setup_problem`` — convenience wrapper returning everything a runner needs:
+  ``(feature_names, variables, target, oracle)``.
 """
-
-import json
-from pathlib import Path
 
 import cpmpy as cp
 from cpmpy.transformations.normalize import toplevel_list
 from flamapy.core.discover import DiscoverMetamodels
 from flamapy.interfaces.python.flamapy_feature_model import FLAMAFeatureModel
-from pycona import (
-    QuAcq,
-    MQuAcq,
-    MQuAcq2,
-    GrowAcq,
-    PQuAcq,
-    MineAcq,
-    GenAcq,
-)
-
-ALGORITHMS = {
-    "quacq": QuAcq,
-    "mquacq": MQuAcq,
-    "mquacq2": MQuAcq2,
-    "growacq": GrowAcq,
-    "pquacq": PQuAcq,
-    "mineacq": MineAcq,
-    "genacq": GenAcq,
-}
+from pycona import ConstraintOracle
 
 
 # ── Feature extraction ──────────────────────────────────────────────────
@@ -119,6 +104,7 @@ def extract_target_constraints(uvl_path, variables, feature_names):
 
     return list(set(toplevel_list(constraints)))
 
+
 def print_target_model(uvl_path, variables, feature_names):
     """Convert flamapy's SAT/CNF encoding of the UVL model to CPMpy constraints."""
     fm = FLAMAFeatureModel(uvl_path)
@@ -144,51 +130,11 @@ def print_target_model(uvl_path, variables, feature_names):
                 constraints.append(literals[0])
             else:
                 constraints.append(cp.any(literals))
-                
 
     return list(set(toplevel_list(constraints)))
 
 
-
-# ── Timeout ──────────────────────────────────────────────────────────
-
-
-class TimeoutError(Exception):
-    pass
-
-
-def _timeout_handler(signum, frame):
-    raise TimeoutError("Timed out")
-
-
-# ── Output ───────────────────────────────────────────────────────────
-
-
-def save_result(result: dict, path: Path):
-    """Write a single result dict as pretty-printed JSON."""
-    with open(path, "w") as f:
-        json.dump(result, f, indent=2)
-    print(f"Wrote result to {path}")
-
-
-# ── CLI helpers ──────────────────────────────────────────────────────
-
-
-def collect_uvl_paths(paths: list[str]) -> list[Path]:
-    """Expand CLI args: files are kept, directories are globbed for *.uvl."""
-    out = []
-    for p in paths:
-        p = Path(p)
-        if p.is_file() and p.suffix == ".uvl":
-            out.append(p)
-        elif p.is_dir():
-            out.extend(sorted(p.rglob("*.uvl")))
-        else:
-            print(f"Skipping {p} (not a .uvl file or directory)")
-    return out
-
-
-def get_reference_configuration(uvl_path: str, X: list[cp.boolvar]) -> dict[str, bool]:
+def get_reference_configuration(uvl_path: str, X: list) -> dict[str, bool]:
     fm = FLAMAFeatureModel(uvl_path)
     # TODO Not sure how to get only 1 configuration
     # Might take a long time for larger models
@@ -200,3 +146,20 @@ def get_reference_configuration(uvl_path: str, X: list[cp.boolvar]) -> dict[str,
         for v in X
     }
     return reference_cfg
+
+
+# ── Convenience: full problem setup ──────────────────────────────────
+
+
+def setup_problem(uvl_path: str):
+    """Build everything a runner needs from a UVL path.
+
+    Returns ``(feature_names, variables, target, oracle)`` where the tree
+    structure is discarded — only names are used to create the CPMpy variables,
+    and the SAT/CNF encoding becomes the oracle's ground truth.
+    """
+    feature_names = extract_feature_names(uvl_path)
+    variables = [cp.boolvar(name=f) for f in feature_names]
+    target = extract_target_constraints(uvl_path, variables, feature_names)
+    oracle = ConstraintOracle(target)
+    return feature_names, variables, target, oracle

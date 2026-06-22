@@ -9,8 +9,8 @@ Constraint encoding (features are 0-indexed; "-i" denotes the negated literal):
   - any other clause                                →  Any l1 l2 ...
 
 Usage:
-  uv run python3 uvl_to_candy.py models/sandwich.uvl models/aircraft_fm.uvl --out-dir candy/
-  uv run python3 uvl_to_candy.py --small --out-dir candy/
+  uv run python -m convert.to_candy models/sandwich.uvl models/aircraft_fm.uvl --out-dir candy/
+  uv run python -m convert.to_candy --small --out-dir candy/
 """
 
 import argparse
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from flamapy.interfaces.python.flamapy_feature_model import FLAMAFeatureModel
 
-from ca_common import extract_feature_names
+from uvl_learner.oracle import extract_feature_names
 
 GAMMA = ["ImplXY", "Alternative", "Any"]
 

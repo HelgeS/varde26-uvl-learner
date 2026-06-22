@@ -10,13 +10,13 @@ the costly CA process.
 
 Usage:
     # Single model
-    python extract_reference.py models/aircraft_fm.uvl
+    python -m convert.to_reference models/aircraft_fm.uvl
 
     # Directory (all *.uvl files)
-    python extract_reference.py models/ --max-features 50
+    python -m convert.to_reference models/ --max-features 50
 
     # Then refine from the extracted reference
-    python refine_from_json.py reference/aircraft_fm.json --verify
+    python -m diagnostics.refine_from_json reference/aircraft_fm.json --verify
 """
 
 import argparse
@@ -28,7 +28,7 @@ from pathlib import Path
 from flamapy.core.discover import DiscoverMetamodels
 from flamapy.interfaces.python.flamapy_feature_model import FLAMAFeatureModel
 
-from ca_common import extract_feature_names
+from uvl_learner.oracle import extract_feature_names
 
 log = logging.getLogger("extract_reference")
 

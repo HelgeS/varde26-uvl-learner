@@ -7,16 +7,16 @@ by the target.
 
 Usage:
     # Single result file (model path read from JSON)
-    python diagnose_missing.py results/stack_fm.json
+    python -m diagnostics.missing results/stack_fm.json
 
     # Explicit model override
-    python diagnose_missing.py results/stack_fm.json --model models/stack_fm.uvl
+    python -m diagnostics.missing results/stack_fm.json --model models/stack_fm.uvl
 
     # Batch: all JSON files in a directory
-    python diagnose_missing.py results/ --summary
+    python -m diagnostics.missing results/ --summary
 
     # Only show results with missing constraints
-    python diagnose_missing.py results/ --only-missing
+    python -m diagnostics.missing results/ --only-missing
 """
 
 import argparse
@@ -28,8 +28,8 @@ import cpmpy as cp
 from cpmpy.expressions.variables import _BoolVarImpl, NegBoolView
 from cpmpy.expressions.core import Operator, Comparison
 
-from ca_common import extract_feature_names, extract_target_constraints
-from tree_inference import constraints_from_tree
+from uvl_learner.oracle import extract_feature_names, extract_target_constraints
+from uvl_learner.reconstruct.extract import constraints_from_tree
 
 
 def _constraint_description(c) -> str:

@@ -9,13 +9,13 @@ This avoids the costly CA process and lets you iterate on the heuristics.
 
 Usage:
     # Re-run refinement on a single result
-    python refine_from_json.py results/REAL-FM-5.json --verify --export-uvl dbg
+    python -m diagnostics.refine_from_json results/REAL-FM-5.json --verify --export-uvl dbg
 
     # Re-run on all results in a directory
-    python refine_from_json.py results/ --verify --out-dir results_v2/
+    python -m diagnostics.refine_from_json results/ --verify --out-dir results_v2/
 
     # Dry run: just show verification without writing anything
-    python refine_from_json.py results/REAL-FM-5.json --verify
+    python -m diagnostics.refine_from_json results/REAL-FM-5.json --verify
 """
 
 import argparse
@@ -28,19 +28,19 @@ from pathlib import Path
 import cpmpy as cp
 from pycona import ConstraintOracle
 
-from ca_common import extract_feature_names, extract_target_constraints, save_result
-from ca_uvl_notree import print_result
-from tree_inference import (
+from uvl_learner.oracle import extract_feature_names, extract_target_constraints
+from uvl_learner.io import save_result, export_learned_to_uvl
+from runners.pairwise import print_result
+from uvl_learner.reconstruct.tree import (
     infer_tree,
-    cleanup_constraints,
-    cleanup_dumb,
-    infer_and_refine_tree,
-    constraints_from_tree,
     _validate_tree,
     _fix_multi_parent_tree,
 )
-from report_results import deep_analysis
-from uvl_export import verify_learned, export_learned_to_uvl
+from uvl_learner.reconstruct.cleanup import cleanup_constraints, cleanup_dumb
+from uvl_learner.reconstruct.refine import infer_and_refine_tree
+from uvl_learner.reconstruct.extract import constraints_from_tree
+from diagnostics.report import deep_analysis
+from uvl_learner.verify import verify_learned
 
 log = logging.getLogger("refine_from_json")
 

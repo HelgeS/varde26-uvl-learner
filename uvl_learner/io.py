@@ -1,19 +1,50 @@
-"""
-UVL export and equivalence verification for learned CPMpy constraint sets.
+"""Input/output helpers: path globbing, result JSON, timeouts, and UVL writing.
 
-Functions
----------
-cpmpy_to_uvl(expr)              CPMpy expression -> UVL propositional string
-export_learned_to_uvl(...)      Write a full .uvl file from learned constraints
-verify_learned(...)             SAT-based equivalence check vs. target clauses
+- ``collect_uvl_paths`` / ``save_result`` / ``TimeoutError`` — run plumbing.
+- ``cpmpy_to_uvl`` / ``export_learned_to_uvl`` — render learned constraints and a
+  reconstructed feature tree back into a ``.uvl`` file.
 """
 
-import re
+import json
 from pathlib import Path
 
-import cpmpy as cp
 from cpmpy.expressions.variables import _BoolVarImpl, NegBoolView
 from cpmpy.expressions.core import Operator, Comparison
+
+
+# ── Timeout ──────────────────────────────────────────────────────────
+
+
+class TimeoutError(Exception):
+    pass
+
+
+def _timeout_handler(signum, frame):
+    raise TimeoutError("Timed out")
+
+
+# ── Result IO ─────────────────────────────────────────────────────────
+
+
+def save_result(result: dict, path: Path):
+    """Write a single result dict as pretty-printed JSON."""
+    with open(path, "w") as f:
+        json.dump(result, f, indent=2)
+    print(f"Wrote result to {path}")
+
+
+def collect_uvl_paths(paths: list[str]) -> list[Path]:
+    """Expand CLI args: files are kept, directories are globbed for *.uvl."""
+    out = []
+    for p in paths:
+        p = Path(p)
+        if p.is_file() and p.suffix == ".uvl":
+            out.append(p)
+        elif p.is_dir():
+            out.extend(sorted(p.rglob("*.uvl")))
+        else:
+            print(f"Skipping {p} (not a .uvl file or directory)")
+    return out
 
 
 # ── Name quoting ──────────────────────────────────────────────────────────
@@ -200,59 +231,3 @@ def export_learned_to_uvl(
 
     Path(output_path).write_text("\n".join(uvl_lines) + "\n", encoding="utf-8")
     return exported, skipped
-
-
-# ── SAT-based equivalence verification ───────────────────────────────────
-
-
-def verify_learned(learned_cl: list, target_cl: list, variables: list) -> dict:
-    """Check whether *learned_cl* is logically equivalent to *target_cl*.
-
-    Uses O(n) sequential SAT checks:
-
-    - False positive: a solution that satisfies all learned constraints but
-      violates at least one target clause.
-    - False negative: a solution that satisfies all target clauses but violates
-      at least one learned constraint.
-
-    Parameters
-    ----------
-    learned_cl  : learned CPMpy constraint list
-    target_cl   : ground-truth CPMpy constraint list (CNF from the UVL model)
-    variables   : list of CPMpy BoolVar — used to read back the counterexample
-
-    Returns
-    -------
-    dict with keys:
-        equivalent          bool
-        has_false_positives bool
-        fp_example          dict[str, bool] | None
-        has_false_negatives bool
-        fn_example          dict[str, bool] | None
-    """
-    has_fp = False
-    fp_example = None
-    has_fn = False
-    fn_example = None
-
-    # False positives: satisfies learned but violates some target clause
-    for t in target_cl:
-        if cp.Model(learned_cl + [~t]).solve():
-            has_fp = True
-            fp_example = {v.name: bool(v.value()) for v in variables}
-            break
-
-    # False negatives: satisfies target but violates some learned constraint
-    for ell in learned_cl:
-        if cp.Model(target_cl + [~ell]).solve():
-            has_fn = True
-            fn_example = {v.name: bool(v.value()) for v in variables}
-            break
-
-    return {
-        "equivalent": not has_fp and not has_fn,
-        "has_false_positives": has_fp,
-        "fp_example": fp_example,
-        "has_false_negatives": has_fn,
-        "fn_example": fn_example,
-    }

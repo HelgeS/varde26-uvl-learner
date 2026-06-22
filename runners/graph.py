@@ -1,34 +1,12 @@
-"""
-Experiment runner for constraint acquisition on UVL feature models — NO-TREE variant.
+"""Runner: graph-bias variant.
 
-**Key difference from ca_uvl.py:**
-Only feature *names* are known during learning; the tree structure is deliberately
-ignored.  The UVL file is used solely as a ground-truth oracle and for feature-name
-extraction.  A flat pairwise bias is built from the names alone, and after learning
-the flat constraint set is post-processed by ``infer_tree`` to reconstruct a tree
-suitable for UVL export.
-
-**Collapse handling (skip-D, enabled by default):**
-Binary CA cannot represent n-ary group-completeness clauses.  When the oracle
-rejects a query but no binary candidate is violated, pycona raises "Collapse".
-``FindCSkipCollapse`` catches this and returns ``None``; ``SkipCollapseCAEnv``
-discards the ``None`` and continues.  After convergence, ``refine_completeness``
-recovers missing ``P => any(children)`` clauses via direct SAT checks.
-Use ``--no-skip-collapse`` to disable (Collapse raises an exception instead).
+Uses the custom graph/conjunction-aware CA components in uvl_learner.bias.graph
+(own FindScope/FindC/QGen built on networkx) for richer n-ary candidate
+generation.
 
 Usage:
-    # Generate sandwich example and run
-    python ca_uvl_notree.py --generate-example --verify
-
-    # Explicit file
-    python ca_uvl_notree.py sandwich.uvl --verify
-
-    # Batch mode
-    python ca_uvl_notree.py models/cloud/ --out-dir results_notree/
-
-    # Compare with tree-aware variant
-    python ca_uvl.py sandwich.uvl --verify
-    python ca_uvl_notree.py sandwich.uvl --verify
+    uv run python -m runners.graph --generate-example --verify
+    uv run python -m runners.graph models/aircraft_fm.uvl --verify
 """
 
 import argparse
@@ -38,42 +16,28 @@ import time
 from pathlib import Path
 
 import cpmpy as cp
-from pycona import (
-    FindScope,
-    FindScope2,
-    ProblemInstance,
-    ActiveCAEnv,
-    ConstraintOracle,
-    Metrics,
-    QuAcq,
-    MQuAcq,
-    MQuAcq2,
-    GrowAcq,
-    PQuAcq,
-    MineAcq,
-    GenAcq,
-)
-from pycona.find_constraint import FindC, FindC2
-from pycona.utils import restore_scope_values
-from uvl_export import verify_learned, export_learned_to_uvl
+from pycona import ProblemInstance, ConstraintOracle, Metrics
 
-from ca_common import (
-    ALGORITHMS,
-    extract_feature_names,
-    extract_target_constraints,
+from uvl_learner.oracle import extract_feature_names, extract_target_constraints
+from uvl_learner.io import (
     TimeoutError,
     _timeout_handler,
     save_result,
     collect_uvl_paths,
+    export_learned_to_uvl,
 )
-from tree_inference import (
-    infer_and_refine_tree,
+from uvl_learner.verify import verify_learned
+from uvl_learner.acquire import ALGORITHMS
+from uvl_learner.bias.pairwise import build_bias
+from uvl_learner.bias.graph import GraphBias, GQuAcq, TrackAndCacheCAEnv
+from uvl_learner.reconstruct.refine import infer_and_refine_tree
+from uvl_learner.reconstruct.tree import (
     infer_tree,
-    constraints_from_tree,
     _validate_tree,
     _fix_multi_parent_tree,
-    cleanup_dumb,
 )
+from uvl_learner.reconstruct.extract import constraints_from_tree
+from uvl_learner.reconstruct.cleanup import cleanup_dumb
 
 
 EXAMPLE_UVL = """\
@@ -93,312 +57,6 @@ constraints
 """
 
 
-# ── Skip-on-Collapse CA environment ──────────────────────────────────
-
-
-class FindCSkipCollapse(FindC2):
-    """FindC variant that returns None instead of raising on Collapse.
-
-    pycona raises ``Exception("Collapse, the constraint we seek is not in B: …")``
-    when no bias candidate is violated by a negative oracle query.  This happens
-    when the target contains n-ary clauses (e.g. ``~P | C1 | C2``) that cannot
-    be represented as binary candidates.  Returning ``None`` lets the outer loop
-    skip this query and continue learning binary constraints.
-
-    On collapse, the scope and its variable values are saved in
-    ``last_collapse_scope`` so that the CA environment can add a blocking
-    nogood to CL, preventing the query generator from reproducing the
-    exact same assignment.
-    """
-
-    def __init__(self, time_limit=30):
-        super().__init__(time_limit=time_limit)
-        self.last_collapse_scope = None  # (scope, values) from most recent collapse
-
-    def run(self, scope):
-        assert self.ca is not None
-        # Save scope variable values BEFORE FindC2 runs.  FindC2's
-        # generate_findc_query() modifies them via solver calls.  On
-        # Collapse the exception is raised before FindC2 can call
-        # restore_scope_values(), leaving variables with stale solver
-        # values.  MQuAcq2's inner loop and analyze_and_learn then use
-        # these corrupted values for subsequent membership queries,
-        # which can cause the oracle to give wrong answers and lead to
-        # wrong constraints being added to C_L.
-        scope_values = [x.value() for x in scope]
-        try:
-            return super().run(scope)
-        except Exception as e:
-            if "Collapse" in str(e):
-                print(
-                    "  FindCSkipCollapse: Collapse on scope %s — skipping",
-                    scope,
-                )
-                restore_scope_values(scope, scope_values)
-                self.last_collapse_scope = (scope, scope_values)
-                return None
-            raise
-
-
-class SkipCollapseCAEnv(ActiveCAEnv):
-    """CA environment that tracks positive/negative query counts and optionally skips Collapse.
-
-    When ``skip_collapse=True`` (default): installs ``FindCSkipCollapse`` so that
-    Collapse exceptions are caught and returned as ``None``; ``add_to_cl`` discards
-    ``None`` and increments ``n_skipped``.
-
-    When ``skip_collapse=False``: uses the standard ``FindC`` and lets Collapse
-    propagate as an exception.  Query counting still works in both modes.
-
-    Attributes
-    ----------
-    n_positive : int
-        Number of oracle queries answered Yes (solution / constraint holds).
-    n_negative : int
-        Number of oracle queries answered No.
-    n_skipped : int
-        Collapse events suppressed (only meaningful when skip_collapse=True).
-    """
-
-    def __init__(self, skip_collapse: bool = True):
-        super().__init__(
-            findc=FindCSkipCollapse(time_limit=30)
-            if skip_collapse
-            else FindC2(time_limit=30),
-            find_scope=FindScope2(),
-        )
-        self._skip_collapse = skip_collapse
-        self.n_positive = 0
-        self.n_negative = 0
-        self.n_skipped = 0
-        self.n_cache_hit = 0
-        self.query_cache = {}
-        self.nogoods = []
-
-    def _track(self, answer: bool) -> bool:
-        if answer:
-            self.n_positive += 1
-        else:
-            self.n_negative += 1
-        return answer
-
-    def ask_membership_query(self, Y=None):
-        if Y:
-            key = tuple((str(v), v.value()) for v in sorted(Y, key=lambda k: str(k)))
-        else:
-            key = tuple()
-
-        if key in self.query_cache:
-            self.n_cache_hit += 1
-            return self.query_cache[key]
-
-        if self.verbose >= 3:
-            query = [f"{v}={v.value()}" for v in sorted(Y, key=lambda k: str(k))]
-            print(f"Query: {query}")
-
-        old_verbosity = self.verbose
-        self.verbose = 0  # to avoid printing the query answer in the oracle
-
-        response = self._track(super().ask_membership_query(Y))
-        self.query_cache[key] = response
-
-        self.verbose = old_verbosity
-
-        if self.verbose >= 3:
-            print("Answer: ", "YES" if response else "NO")
-        
-        return response
-
-    def ask_recommendation_query(self, c):
-        return self._track(super().ask_recommendation_query(c))
-
-    def ask_generalization_query(self, c, C):
-        return self._track(super().ask_generalization_query(c, C))
-
-    def add_to_cl(self, C):
-        if self._skip_collapse and C is None:
-            self.n_skipped += 1
-            print(f"  SkipCollapseCAEnv: skipped collapse #{self.n_skipped}")
-            # Add a blocking nogood for the collapsed scope assignment so the
-            # query generator won't reproduce the exact same variable values.
-            scope_info = self.findc.last_collapse_scope
-            if scope_info is not None:
-                scope, vals = scope_info
-                nogood = ~cp.all([x if v else ~x for x, v in zip(scope, vals)])
-                # self.instance.cl.append(nogood)
-                # self.nogoods.append(nogood)
-                # TODO This makes no sense, we only block single features
-                # We need to block entire queries
-                print(f"  SkipCollapseCAEnv: added blocking nogood for scope {scope}: {nogood}")
-                self.findc.last_collapse_scope = None
-            return
-        super().add_to_cl(C)
-
-
-# ── Flat bias construction (no tree) ─────────────────────────────────
-
-
-def build_bias(variables):
-    """Build flat pairwise candidate constraint set — binary only.
-
-    For each pair (i < j):
-        vi.implies(vj), vj.implies(vi)     # requires (both directions)
-        vi.implies(~vj), vj.implies(~vi)   # excludes (both directions)
-        vi == vj                           # equivalence
-
-    For each variable vi:
-        vi, ~vi                            # core / dead (unary)
-
-    Size: 5·C(n,2) + 2·n.  For n=20 → 990 candidates.
-
-    N-ary group-completeness clauses are not representable here.  With
-    skip-collapse enabled (default), Collapse events from them are suppressed
-    and the missing clauses are recovered post-CA by ``refine_completeness``.
-    """
-    bias = []
-    n = len(variables)
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            vi, vj = variables[i], variables[j]
-            bias.append(vi.implies(vj))
-            bias.append(vj.implies(vi))
-            bias.append(vi.implies(~vj))
-            bias.append(vj.implies(~vi))
-            # bias.append((~vi).implies(~vj))
-            # bias.append((~vj).implies(~vi))
-            # bias.append(vi == vj)
-            # TODO Is it non-normalized if we have a->b and b->a instead of a==b; I think so, because a scope is normally unordered
-
-    # TODO mquacq2 does not support unary constraints
-    # for vi in variables:
-    #     bias.append(vi)
-    #     bias.append(~vi)
-
-    return bias
-
-
-def build_group_bias(variables, group_size: int) -> list:
-    """Build group-semantics bias constraints for all combinations of one parent
-    and ``group_size`` children drawn from ``variables``.
-
-    For every ordered choice of one parent variable and every ``group_size``-
-    element subset of the remaining variables as children, the following
-    candidate constraints are added:
-
-      - OR group:      parent => (c1 | c2 | ... | cn)
-      - Alternative:   parent => (sum(children) == 1)
-      - Cardinality:   parent => (sum(children) >= k)  for k in 1..group_size
-                       parent => (sum(children) <= k)  for k in 1..group_size
-      - Child-parent:  ci => parent                    for each child ci
-
-    Parameters
-    ----------
-    variables : list
-        CPMpy BoolVar list (one per feature).
-    group_size : int
-        Number of children in each candidate group (must be >= 1).
-
-    Returns
-    -------
-    list
-        Flat list of CPMpy constraint expressions.
-    """
-    from itertools import combinations
-
-    bias = []
-    n = len(variables)
-
-    for parent_idx in range(n):
-        parent = variables[parent_idx]
-        others = [variables[j] for j in range(n) if j != parent_idx]
-
-        for children in combinations(others, group_size):
-            children = list(children)
-
-            # OR group: parent implies at least one child selected
-            bias.append(parent.implies(cp.any(children)))
-
-            # Alternative group: parent implies exactly one child selected
-            bias.append(parent.implies(sum(children) == 1))
-
-            # Cardinality bounds
-            # for k in range(1, group_size + 1):
-            #     bias.append(parent.implies(sum(children) >= k))
-            #     bias.append(parent.implies(sum(children) <= k))
-
-            # Every child implies the parent
-            # for c in children:
-            #     bias.append(c.implies(parent))
-
-    return bias
-
-
-# ── Algorithm factory ─────────────────────────────────────────────────
-
-
-def build_algorithm(
-    name: str,
-    *,
-    skip_collapse: bool = True,
-    cliques_cutoff: int = 1,
-    analyze_and_learn: bool = True,
-    qg_max: int = 10,
-    grow_inner: str = "mquacq2",
-) -> tuple:
-    """Instantiate a pycona CA algorithm by name with the given options.
-
-    Returns ``(algorithm, skip_env)`` where ``skip_env`` is either a
-    ``SkipCollapseCAEnv`` (when ``skip_collapse=True``) or ``None`` (when
-    skip is disabled, Collapse raises an exception instead).
-
-    GenAcq always uses types=[] because without tree_info there are no
-    sibling groups to exploit.
-
-    For GrowAcq the skip environment is attached to the *inner* algorithm
-    (which performs the actual FindC calls); the returned ``skip_env`` refers
-    to that inner env.
-    """
-    ca_env = SkipCollapseCAEnv(skip_collapse=skip_collapse)
-
-    if name == "quacq":
-        return QuAcq(ca_env=ca_env), ca_env
-    elif name == "mquacq":
-        return MQuAcq(ca_env=ca_env), ca_env
-    elif name == "mquacq2":
-        return MQuAcq2(
-            ca_env=ca_env,
-            perform_analyzeAndLearn=analyze_and_learn,
-            cliques_cutoff=cliques_cutoff,
-        ), ca_env
-    elif name == "growacq":
-        # GrowAcq uses ProbaActiveCAEnv as its outer env; the inner algorithm
-        # does the FindC work, so attach ca_env there.
-        if grow_inner == "mquacq2":
-            inner = MQuAcq2(
-                ca_env=ca_env,
-                perform_analyzeAndLearn=analyze_and_learn,
-                cliques_cutoff=cliques_cutoff,
-            )
-        else:
-            inner = ALGORITHMS[grow_inner](ca_env=ca_env)
-        return GrowAcq(inner_algorithm=inner), ca_env
-    elif name == "pquacq":
-        return PQuAcq(ca_env=ca_env), ca_env
-    elif name == "mineacq":
-        return MineAcq(ca_env=ca_env, qg_max=qg_max), ca_env
-    elif name == "genacq":
-        print("  genacq: untyped mode (no tree_info)")
-        return GenAcq(ca_env=ca_env, types=[], qg_max=qg_max), ca_env
-    else:
-        raise ValueError(
-            f"Unknown algorithm: {name!r}. Choose from: {list(ALGORITHMS)}"
-        )
-
-
-# ── Experiment runner ─────────────────────────────────────────────────
-
-
 def run_experiment(
     uvl_path: str,
     timeout: int = 0,
@@ -409,9 +67,7 @@ def run_experiment(
     skip_collapse: bool = True,
     group_bias_max: int = 1,
     cliques_cutoff: int = 1,
-    analyze_and_learn: bool = True,
-    qg_max: int = 10,
-    grow_inner: str = "mquacq2",
+    analyze_and_learn: bool = False,
 ) -> dict:
     """Run CA on a single UVL model (tree-unknown scenario) and return a results dict.
 
@@ -445,11 +101,11 @@ def run_experiment(
         result["cnf_clauses"] = len(target)
         print(f"  CNF clauses: {len(target)}")
 
+        # SETUP STOP
+
         # 4. Flat binary bias (no tree) + optional group bias
         t_bias = time.monotonic()
-        bias = build_bias(variables)
-        for gs in range(2, group_bias_max + 1):
-            bias.extend(build_group_bias(variables, group_size=gs))
+        bias = GraphBias(build_bias(variables))
         result["bias_size"] = len(bias)
         result["group_bias_max"] = group_bias_max
         result["time_bias"] = round(time.monotonic() - t_bias, 4)
@@ -463,15 +119,32 @@ def run_experiment(
         oracle = ConstraintOracle(target)
         metrics = Metrics()
 
-        ca, skip_env = build_algorithm(
-            algorithm,
-            skip_collapse=skip_collapse,
-            cliques_cutoff=cliques_cutoff,
-            analyze_and_learn=analyze_and_learn,
-            qg_max=qg_max,
-            grow_inner=grow_inner,
-        )
-        print(f"  algorithm: {algorithm}{' (skip-collapse)' if skip_collapse else ''}")
+        def debug_query(q):
+            vars = []
+            varval = []
+
+            for qi in q:
+                vn, vv = qi.split("=")
+                vars.append(next(v for v in variables if v.name == vn))
+                varval.append(vv == "True")
+
+            restore_scope_values(vars, varval)
+            resp = oracle.answer_membership_query(vars)
+            return resp
+
+        # q = ['Core=True', 'Diesel=True', 'Electric=False', 'Metrics=False', 'System=True', 'Tracing=False']
+        # debug_query(q)
+        # q = ['Core=True', 'Diesel=True', 'Electric=False', 'Logging=False', 'Metrics=False', 'System=True', 'Tracing=False']
+        # debug_query(q)
+
+        ca_env = TrackAndCacheCAEnv()
+        ca = GQuAcq(ca_env=ca_env)
+        # ca = GMQuAcq2(
+        #     ca_env=skip_env,
+        #     perform_analyzeAndLearn=True,  # analyze_and_learn,
+        #     cliques_cutoff=cliques_cutoff,
+        # )
+
         try:
             learned_instance = ca.learn(
                 instance=problem,
@@ -482,38 +155,31 @@ def run_experiment(
         except Exception as e:
             print(f"Exception occurred: {e}")
             print("EXCEPTION == Learned CL")
-            for c in skip_env.instance.cl:
+            for c in ca_env.instance.cl:
                 print(f"  {c}")
-            learned_instance = skip_env.instance
 
-        print(f"remove {len(skip_env.nogoods)} nogoods")
-        skip_env.instance.cl = [
-            c for c in skip_env.instance.cl if c not in skip_env.nogoods
-        ]
+            raise
 
         print("+++ CA run complete +++")
-        pickle.dump(skip_env.query_cache, open("query_cache.p", "wb"))
+        pickle.dump(ca_env.query_cache, open("query_cache.p", "wb"))
 
         print(f"  Learned from CA: {len(learned_instance.cl)}")
-        for c in learned_instance.cl:
-            print(f"    {c}")
 
+        if len(learned_instance.cl) <= 100:
+            for c in learned_instance.cl:
+                print(f"    {c}")
 
-        bias = learned_instance.bias.copy()
-        # learned_instance.cl.extend(learned_instance.bias)
-        print(f"  Remaining bias: {len(learned_instance.bias)}")
-        # for b in learned_instance.bias:
-        #     print(f"    {b}")
-            # raise
+        # TODO Remaining postprocessing for graph bias
+
         metrics.finalize_statistics()
         result["time_ca"] = round(time.monotonic() - t_ca, 4)
 
-        result["queries_positive"] = skip_env.n_positive
-        result["queries_negative"] = skip_env.n_negative
+        result["queries_positive"] = ca_env.n_positive
+        result["queries_negative"] = ca_env.n_negative
         if skip_collapse:
-            result["n_skipped_collapses"] = skip_env.n_skipped
-            if skip_env.n_skipped:
-                print(f"  skipped collapses: {skip_env.n_skipped}")
+            result["n_skipped_collapses"] = ca_env.n_skipped
+            if ca_env.n_skipped:
+                print(f"  skipped collapses: {ca_env.n_skipped}")
 
         # 6. Collect results
         learned = learned_instance.cl
@@ -600,7 +266,7 @@ def run_experiment(
 
         result["constraints"] = [str(c) for c in enhanced_cl]
         result["inferred_tree"] = infer_tree(feature_names, variables, enhanced_cl)
-        result["query_cache_hits"] = skip_env.n_cache_hit
+        result["query_cache_hits"] = ca_env.n_cache_hit
 
         # # Serialize to JSON-safe format: {parent: [[gtype, [children]], ...]}
         # result["inferred_tree"] = {
@@ -939,8 +605,6 @@ def main():
             group_bias_max=args.group_bias_max,
             cliques_cutoff=args.cliques_cutoff,
             analyze_and_learn=not args.no_analyze_learn,
-            qg_max=args.qg_max,
-            grow_inner=args.grow_inner,
         )
         results.append(r)
 
@@ -951,7 +615,7 @@ def main():
             save_result(r, out_dir / f"{uvl_path.stem}.json")
 
     if args.deep:
-        from report_results import deep_analysis
+        from diagnostics.report import deep_analysis
 
         # Add synthetic keys expected by deep_analysis
         for r in results:
@@ -979,7 +643,7 @@ def main():
             total_skipped = sum(r.get("n_skipped_collapses", 0) for r in ok)
             print(f"  Total skipped collapses: {total_skipped}")
     if failed:
-        print(f"  Failed models:")
+        print("  Failed models:")
         for r in failed:
             print(f"    {r['model']}: {r['error']}")
     print(f"{'=' * 65}")

@@ -7,16 +7,16 @@ diagnosis on selected models.
 
 Usage:
     # Fast overview from JSON metadata only (no SAT solving)
-    python report_results.py results/
+    python -m diagnostics.report results/
 
     # Full SAT-based diagnosis (slow — checks every constraint)
-    python report_results.py results/ --deep
+    python -m diagnostics.report results/ --deep
 
     # Deep diagnosis on named models only
-    python report_results.py results/ --deep --named-only
+    python -m diagnostics.report results/ --deep --named-only
 
     # Write report to file
-    python report_results.py results/ --deep -o report.txt
+    python -m diagnostics.report results/ --deep -o report.txt
 """
 
 import argparse
@@ -40,10 +40,10 @@ def _ensure_deep_imports():
     global _classify_clause, check_bias_coverage
     global constraints_from_tree, _rebuild_tree_info
     import cpmpy as cp
-    from ca_common import extract_feature_names, extract_target_constraints
-    from tree_inference import constraints_from_tree
-    from diagnose_missing import rebuild_learned_constraints, find_missing_constraints, _rebuild_tree_info
-    from diagnose_underconstraining import _classify_clause, check_bias_coverage
+    from uvl_learner.oracle import extract_feature_names, extract_target_constraints
+    from uvl_learner.reconstruct.extract import constraints_from_tree
+    from diagnostics.missing import rebuild_learned_constraints, find_missing_constraints, _rebuild_tree_info
+    from diagnostics.underconstraining import _classify_clause, check_bias_coverage
     _deep_imports_done = True
 
 

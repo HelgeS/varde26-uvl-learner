@@ -1,5 +1,7 @@
 # varde26-uvl-learner
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/HelgeS/varde26-uvl-learner)
+
 UVL Learner project @ VARDE 2026.
 
 Interactive **constraint acquisition (CA)** on UVL feature models. A PyCONA CA
@@ -22,6 +24,22 @@ Key dependencies (see `pyproject.toml`): `pycona` (CA algorithms), `cpmpy`
 (graph-bias variant), `python-sat`.
 
 `models/` contains the UVL feature models used as oracles / inputs.
+
+## Run in the cloud (no local setup)
+
+Click the **Open in GitHub Codespaces** badge above (or **Code → Codespaces →
+Create** on the repo). This launches browser-based VS Code with a terminal in a
+container that already ran `uv sync`, so you can immediately:
+
+```bash
+uv run python -m runners.pairwise --generate-example --verify
+```
+
+The environment is defined in `.devcontainer/devcontainer.json` (Python 3.12 +
+`uv`). Each participant gets their own isolated Codespace — ideal for a workshop,
+with no local install required. The first build per person takes a few minutes
+because some dependencies compile native code; enabling **Codespaces prebuilds**
+in the repo settings removes that wait.
 
 ## Quick start
 

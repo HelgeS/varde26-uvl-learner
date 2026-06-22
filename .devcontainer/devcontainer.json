@@ -1,0 +1,18 @@
+{
+  "name": "varde26-uvl-learner",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  // Install uv and resolve the locked environment so `uv run ...` works out of the box.
+  "postCreateCommand": "pip install uv && uv sync",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": ".venv/bin/python",
+        "python.terminal.activateEnvironment": true
+      }
+    }
+  }
+}
